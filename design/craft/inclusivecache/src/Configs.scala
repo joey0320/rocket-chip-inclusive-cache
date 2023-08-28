@@ -42,14 +42,17 @@ case class InclusiveCacheParams(
   bufOuterExterior: InclusiveCachePortParameters = InclusiveCachePortParameters.none)
 
 case object InclusiveCacheKey extends Field[InclusiveCacheParams]
+case object InclusiveCacheHasControl extends Field[Boolean]
 
 class WithInclusiveCache(
   nWays: Int = 8,
   capacityKB: Int = 512,
   outerLatencyCycles: Int = 40,
   subBankingFactor: Int = 4,
-  hintsSkipProbe: Boolean = false
+  hintsSkipProbe: Boolean = false,
+  hasControl: Boolean = true
 ) extends Config((site, here, up) => {
+  case InclusiveCacheHasControl => hasControl
   case InclusiveCacheKey => InclusiveCacheParams(
       sets = (capacityKB * 1024)/(site(CacheBlockBytes) * nWays * up(BankedL2Key, site).nBanks),
       ways = nWays,
@@ -73,6 +76,12 @@ class WithInclusiveCache(
       bufOuterInterior,
       bufOuterExterior) = p(InclusiveCacheKey)
 
+    val ctrl_params = Some(
+      InclusiveCacheControlParameters(
+        address = InclusiveCacheParameters.L2ControlAddress,
+        beatBytes = cbus.beatBytes))
+    val l2ctrl = if (!hasControl) None else ctrl_params
+
     val l2 = LazyModule(new InclusiveCache(
       CacheParameters(
         level = 2,
@@ -87,9 +96,7 @@ class WithInclusiveCache(
         memCycles = memCycles,
         innerBuf = bufInnerInterior,
         outerBuf = bufOuterInterior),
-      Some(InclusiveCacheControlParameters(
-        address = InclusiveCacheParameters.L2ControlAddress,
-        beatBytes = cbus.beatBytes))))
+      l2ctrl))
 
     def skipMMIO(x: TLClientParameters) = {
       val dcacheMMIO =
@@ -124,8 +131,10 @@ class WithInclusiveCache(
       }
     }
 
-    l2.ctlnode.foreach {
-      _ := cbus.coupleTo("l2_ctrl") { TLBuffer(1) := TLFragmenter(cbus) := _ }
+    if (hasControl) {
+      l2.ctlnode.foreach {
+        _ := cbus.coupleTo("l2_ctrl") { TLBuffer(1) := TLFragmenter(cbus) := _ }
+      }
     }
 
     ElaborationArtefacts.add("l2.json", l2.module.json)

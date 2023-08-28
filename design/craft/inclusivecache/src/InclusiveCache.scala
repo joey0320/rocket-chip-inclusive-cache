@@ -124,93 +124,129 @@ class InclusiveCache(
     }
 
     // Flush directive
-    val flushInValid   = RegInit(false.B)
-    val flushInReady   = WireInit(init = false.B)
-    val flushInAddress = Reg(UInt(64.W))
-    val flushNoMatch   = WireInit(init = true.B)
-    val flushOutValid  = RegInit(false.B)
-    val flushOutReady  = WireInit(init = false.B)
+    val mods = if (ctlnode.isDefined) {
+      val flushInValid   = RegInit(false.B)
+      val flushInReady   = WireInit(init = false.B)
+      val flushInAddress = Reg(UInt(64.W))
+      val flushNoMatch   = WireInit(init = true.B)
+      val flushOutValid  = RegInit(false.B)
+      val flushOutReady  = WireInit(init = false.B)
 
-    when (flushOutReady) { flushOutValid := false.B }
-    when (flushInReady)  { flushInValid  := false.B }
+      when (flushOutReady) { flushOutValid := false.B }
+      when (flushInReady)  { flushInValid  := false.B }
 
-    when (flushNoMatch && flushInValid) {
-      flushInReady := true.B
-      flushOutValid := true.B
-    }
-
-    val flush32 = RegField.w(32, RegWriteFn((ivalid, oready, data) => {
-      when (oready) { flushOutReady := true.B }
-      when (ivalid) { flushInValid := true.B }
-      when (ivalid && !flushInValid) { flushInAddress := data << 4 }
-      (!flushInValid, flushOutValid)
-    }), RegFieldDesc("Flush32", "Flush the physical address equal to the 32-bit written data << 4 from the cache"))
-
-    val flush64 = RegField.w(64, RegWriteFn((ivalid, oready, data) => {
-      when (oready) { flushOutReady := true.B }
-      when (ivalid) { flushInValid := true.B }
-      when (ivalid && !flushInValid) { flushInAddress := data }
-      (!flushInValid, flushOutValid)
-    }), RegFieldDesc("Flush64", "Flush the phsyical address equal to the 64-bit written data from the cache"))
-
-    // Information about the cache configuration
-    val banksR  = RegField.r(8, node.edges.in.size.U,               RegFieldDesc("Banks",
-      "Number of banks in the cache", reset=Some(node.edges.in.size)))
-    val waysR   = RegField.r(8, cache.ways.U,                       RegFieldDesc("Ways",
-      "Number of ways per bank", reset=Some(cache.ways)))
-    val lgSetsR = RegField.r(8, log2Ceil(cache.sets).U,             RegFieldDesc("lgSets",
-      "Base-2 logarithm of the sets per bank", reset=Some(log2Ceil(cache.sets))))
-    val lgBlockBytesR = RegField.r(8, log2Ceil(cache.blockBytes).U, RegFieldDesc("lgBlockBytes",
-      "Base-2 logarithm of the bytes per cache block", reset=Some(log2Ceil(cache.blockBytes))))
-
-    val regmap = ctlnode.map { c =>
-      c.regmap(
-        0x000 -> RegFieldGroup("Config", Some("Information about the Cache Configuration"), Seq(banksR, waysR, lgSetsR, lgBlockBytesR)),
-        0x200 -> (if (control.get.beatBytes >= 8) Seq(flush64) else Seq()),
-        0x240 -> Seq(flush32)
-      )
-    }
-
-    // Create the L2 Banks
-    val mods = (node.in zip node.out) map { case ((in, edgeIn), (out, edgeOut)) =>
-      edgeOut.manager.managers.foreach { m =>
-        require (m.supportsAcquireB.contains(xfer),
-          s"All managers behind the L2 must support acquireB($xfer) " +
-          s"but ${m.name} only supports (${m.supportsAcquireB})!")
-        if (m.supportsAcquireT) require (m.supportsAcquireT.contains(xfer),
-          s"Any probing managers behind the L2 must support acquireT($xfer) " +
-          s"but ${m.name} only supports (${m.supportsAcquireT})!")
+      when (flushNoMatch && flushInValid) {
+        flushInReady := true.B
+        flushOutValid := true.B
       }
 
-      val params = InclusiveCacheParameters(cache, micro, control.isDefined, edgeIn, edgeOut)
-      val scheduler = Module(new InclusiveCacheBankScheduler(params)).suggestName("inclusive_cache_bank_sched")
+      val flush32 = RegField.w(32, RegWriteFn((ivalid, oready, data) => {
+        when (oready) { flushOutReady := true.B }
+        when (ivalid) { flushInValid := true.B }
+        when (ivalid && !flushInValid) { flushInAddress := data << 4 }
+        (!flushInValid, flushOutValid)
+      }), RegFieldDesc("Flush32", "Flush the physical address equal to the 32-bit written data << 4 from the cache"))
 
-      scheduler.io.in <> in
-      out <> scheduler.io.out
-      scheduler.io.ways := DontCare
-      scheduler.io.divs := DontCare
+      val flush64 = RegField.w(64, RegWriteFn((ivalid, oready, data) => {
+        when (oready) { flushOutReady := true.B }
+        when (ivalid) { flushInValid := true.B }
+        when (ivalid && !flushInValid) { flushInAddress := data }
+        (!flushInValid, flushOutValid)
+      }), RegFieldDesc("Flush64", "Flush the phsyical address equal to the 64-bit written data from the cache"))
 
-      val flushSelect = edgeIn.manager.managers.flatMap(_.address).map(_.contains(flushInAddress)).reduce(_||_)
-      when (flushSelect) { flushNoMatch := false.B }
+      // Information about the cache configuration
+      val banksR  = RegField.r(8, node.edges.in.size.U,               RegFieldDesc("Banks",
+        "Number of banks in the cache", reset=Some(node.edges.in.size)))
+      val waysR   = RegField.r(8, cache.ways.U,                       RegFieldDesc("Ways",
+        "Number of ways per bank", reset=Some(cache.ways)))
+      val lgSetsR = RegField.r(8, log2Ceil(cache.sets).U,             RegFieldDesc("lgSets",
+        "Base-2 logarithm of the sets per bank", reset=Some(log2Ceil(cache.sets))))
+      val lgBlockBytesR = RegField.r(8, log2Ceil(cache.blockBytes).U, RegFieldDesc("lgBlockBytes",
+        "Base-2 logarithm of the bytes per cache block", reset=Some(log2Ceil(cache.blockBytes))))
 
-      when (flushSelect && scheduler.io.req.ready)  { flushInReady := true.B }
-      when (scheduler.io.resp.valid) { flushOutValid := true.B }
-      assert (!scheduler.io.resp.valid || flushSelect)
+      val regmap = ctlnode.map { c =>
+        c.regmap(
+          0x000 -> RegFieldGroup("Config", Some("Information about the Cache Configuration"), Seq(banksR, waysR, lgSetsR, lgBlockBytesR)),
+          0x200 -> (if (control.get.beatBytes >= 8) Seq(flush64) else Seq()),
+          0x240 -> Seq(flush32)
+        )
+      }
 
-      scheduler.io.req.valid := flushInValid && flushSelect
-      scheduler.io.req.bits.address := flushInAddress
-      scheduler.io.resp.ready := !flushOutValid
+      // Create the L2 Banks
+      val mods = (node.in zip node.out) map { case ((in, edgeIn), (out, edgeOut)) =>
+        edgeOut.manager.managers.foreach { m =>
+          require (m.supportsAcquireB.contains(xfer),
+            s"All managers behind the L2 must support acquireB($xfer) " +
+            s"but ${m.name} only supports (${m.supportsAcquireB})!")
+          if (m.supportsAcquireT) require (m.supportsAcquireT.contains(xfer),
+            s"Any probing managers behind the L2 must support acquireT($xfer) " +
+          s"but ${m.name} only supports (${m.supportsAcquireT})!")
+        }
 
-      // Fix-up the missing addresses. We do this here so that the Scheduler can be
-      // deduplicated by Firrtl to make hierarchical place-and-route easier.
+        val params = InclusiveCacheParameters(cache, micro, control.isDefined, edgeIn, edgeOut)
+        val scheduler = Module(new InclusiveCacheBankScheduler(params)).suggestName("inclusive_cache_bank_sched")
 
-      out.a.bits.address := params.restoreAddress(scheduler.io.out.a.bits.address)
-      in .b.bits.address := params.restoreAddress(scheduler.io.in .b.bits.address)
-      out.c.bits.address := params.restoreAddress(scheduler.io.out.c.bits.address)
+        scheduler.io.in <> in
+        out <> scheduler.io.out
+        scheduler.io.ways := DontCare
+        scheduler.io.divs := DontCare
 
-      scheduler
+        val flushSelect = edgeIn.manager.managers.flatMap(_.address).map(_.contains(flushInAddress)).reduce(_||_)
+        when (flushSelect) { flushNoMatch := false.B }
+
+        when (flushSelect && scheduler.io.req.ready)  { flushInReady := true.B }
+        when (scheduler.io.resp.valid) { flushOutValid := true.B }
+        assert (!scheduler.io.resp.valid || flushSelect)
+
+        scheduler.io.req.valid := flushInValid && flushSelect
+        scheduler.io.req.bits.address := flushInAddress
+        scheduler.io.resp.ready := !flushOutValid
+
+        // Fix-up the missing addresses. We do this here so that the Scheduler can be
+        // deduplicated by Firrtl to make hierarchical place-and-route easier.
+
+        out.a.bits.address := params.restoreAddress(scheduler.io.out.a.bits.address)
+        in .b.bits.address := params.restoreAddress(scheduler.io.in .b.bits.address)
+        out.c.bits.address := params.restoreAddress(scheduler.io.out.c.bits.address)
+
+        scheduler
+      }
+      mods
+    } else {
+      // Create the L2 Banks
+      val mods = (node.in zip node.out) map { case ((in, edgeIn), (out, edgeOut)) =>
+        edgeOut.manager.managers.foreach { m =>
+          require (m.supportsAcquireB.contains(xfer),
+            s"All managers behind the L2 must support acquireB($xfer) " +
+            s"but ${m.name} only supports (${m.supportsAcquireB})!")
+          if (m.supportsAcquireT) require (m.supportsAcquireT.contains(xfer),
+            s"Any probing managers behind the L2 must support acquireT($xfer) " +
+          s"but ${m.name} only supports (${m.supportsAcquireT})!")
+        }
+
+        val params = InclusiveCacheParameters(cache, micro, control.isDefined, edgeIn, edgeOut)
+        val scheduler = Module(new InclusiveCacheBankScheduler(params)).suggestName("inclusive_cache_bank_sched")
+
+        scheduler.io.in <> in
+        out <> scheduler.io.out
+        scheduler.io.ways := DontCare
+        scheduler.io.divs := DontCare
+
+        scheduler.io.req.valid := false.B
+        scheduler.io.req.bits.address := 0.U
+        scheduler.io.resp.ready := true.B
+
+        // Fix-up the missing addresses. We do this here so that the Scheduler can be
+        // deduplicated by Firrtl to make hierarchical place-and-route easier.
+
+        out.a.bits.address := params.restoreAddress(scheduler.io.out.a.bits.address)
+        in .b.bits.address := params.restoreAddress(scheduler.io.in .b.bits.address)
+        out.c.bits.address := params.restoreAddress(scheduler.io.out.c.bits.address)
+
+        scheduler
+      }
+      mods
     }
-
     def json = s"""{"banks":[${mods.map(_.json).mkString(",")}]}"""
   }
 }
